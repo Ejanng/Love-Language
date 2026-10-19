@@ -1,0 +1,16 @@
+// Each counter keeps its own private `count` because functions capture the scope they were made in.
+fn makeCounter() {
+  let count = 0;
+  fn next() {
+    count = count + 1;
+    return count;
+  }
+  return next;
+}
+
+let a = makeCounter();
+let b = makeCounter();
+print a();
+print a();
+print b();
+print a();

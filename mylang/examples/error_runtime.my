@@ -1,0 +1,4 @@
+// Runtime errors report the line number and stop the program.
+print "before";
+print missing;
+print "never printed";
