@@ -13,6 +13,11 @@ struct SyntaxError : LangError {
     using LangError::LangError;
 };
 
+// Thrown by the bytecode compiler for programs that parse but can't be compiled.
+struct CompileError : LangError {
+    using LangError::LangError;
+};
+
 // Thrown while a program is running.
 struct RuntimeError : LangError {
     using LangError::LangError;
