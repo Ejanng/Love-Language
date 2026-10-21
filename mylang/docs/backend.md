@@ -1,6 +1,6 @@
 # The mylang backend: bytecode compiler and virtual machine
 
-This document explains the backend of mylang: what it does, how each part works, and how to extend it. It assumes you have read the [README](../README.md) and know the language's syntax.
+This document explains the backend of mylang: what it does, how each part works, and how to extend it. It assumes you have read the [README](../README.md) and know the language's syntax. For a tour of every source file, including the front end and the tree-walker, see the [code guide](code-guide.md).
 
 ## 1. What the backend is
 
@@ -9,10 +9,10 @@ A language implementation is a pipeline. The **front end** reads text and works 
 ```
                  front end (shared)                          backend (pick one)
  source ──► Lexer ──► tokens ──► Parser ──► AST ──┬──► Interpreter               (tree-walker, default)
- (.my)    lexer.hpp           parser.hpp  ast.hpp │    interpreter.hpp
+ (.rene)  lexer.c             parser.c    ast.h   │    interpreter.c
                                                   │
                                                   └──► Compiler ──► bytecode ──► VM   (--vm)
-                                                       vm/compiler.hpp  vm/chunk.hpp  vm/vm.hpp
+                                                       vm/compiler.c  vm/chunk.c  vm/vm.c
 ```
 
 mylang has two backends that run the same programs and produce the same output:
@@ -20,20 +20,20 @@ mylang has two backends that run the same programs and produce the same output:
 | Backend | Flag | How it runs a program | Strength |
 |---|---|---|---|
 | Tree-walking interpreter | *(default)* | Visits AST nodes recursively and evaluates each one | Short, easy to change, the reference for correct behavior |
-| **Bytecode VM** | `--vm` | Compiles the AST once into a flat list of simple instructions, then runs them in a loop | Much faster (about 24× on the benchmark below) |
+| **Bytecode VM** | `--vm` | Compiles the AST once into a flat list of simple instructions, then runs them in a loop | Faster (about 2× on the benchmark below) |
 
 The bytecode VM is the new part. It follows the design of `clox` from *Crafting Interpreters*, Part III, and Section 7 ("Strategy 2: a stack-based bytecode VM") of the project guide.
 
 ## 2. Using it
 
 ```bash
-g++ -std=c++17 -O2 -Wall -Wextra src/main.cpp -o mylang
+gcc -std=c11 -O2 -Wall -Wextra src/*.c src/vm/*.c -lm -o mylang
 
-./mylang program.my          # tree-walking interpreter
-./mylang --vm program.my     # bytecode VM
-./mylang --dump program.my   # print the compiled bytecode, then run it on the VM
-./mylang --vm                # REPL on the VM (globals persist between lines)
-tests/run_tests.sh           # run every example on both backends
+./mylang program.rene          # tree-walking interpreter
+./mylang --vm program.rene     # bytecode VM
+./mylang --dump program.rene   # print the compiled bytecode, then run it on the VM
+./mylang --vm                  # REPL on the VM (globals persist between lines)
+tests/run_tests.sh             # run every example on both backends
 ```
 
 Exit codes are the same for both backends: `0` success, `65` syntax or compile error, `70` runtime error, `74` file not found, `64` bad command-line usage.
@@ -42,17 +42,18 @@ Exit codes are the same for both backends: `0` success, `65` syntax or compile e
 
 | File | Role | Main types |
 |---|---|---|
-| [src/vm/chunk.hpp](../src/vm/chunk.hpp) | The instruction set and the compiled form of a function. Also the disassembler behind `--dump`. | `Op`, `Instr`, `Proto`, `UpvalueRef`, `Value` |
-| [src/vm/compiler.hpp](../src/vm/compiler.hpp) | Walks the AST once and emits bytecode. Resolves every variable name to a local, upvalue or global. | `Compiler` |
-| [src/vm/vm.hpp](../src/vm/vm.hpp) | Runs bytecode on a value stack with call frames. Owns the globals table. | `VM`, `Closure`, `Upvalue` |
-
-Everything in the backend lives in `namespace vm`, so its `Value` type doesn't collide with the tree-walker's.
+| [src/vm/chunk.h](../src/vm/chunk.h), [chunk.c](../src/vm/chunk.c) | The instruction set and the compiled form of a function. Also the disassembler behind `--dump`. | `Op`, `Instr`, `Proto`, `UpvalueRef` |
+| [src/vm/compiler.h](../src/vm/compiler.h), [compiler.c](../src/vm/compiler.c) | Walks the AST once and emits bytecode. Resolves every variable name to a local, upvalue or global. | `compile`, `FunctionState` |
+| [src/vm/vm.h](../src/vm/vm.h), [vm.c](../src/vm/vm.c) | Runs bytecode on a value stack with call frames. Owns the globals table. | `VM`, `Frame` |
+| [src/value.h](../src/value.h), [value.c](../src/value.c) | The `Value` type and heap objects, shared with the tree-walker. The VM adds `ObjClosure` and `ObjUpvalue`. | `Value`, `ObjClosure`, `ObjUpvalue` |
 
 ## 4. Values
 
-```cpp
-using Value = std::variant<std::monostate, double, bool, std::string, std::shared_ptr<Closure>>;
-//                         nil             number  bool  string       function
+```c
+typedef struct {
+    ValueType type;  // VAL_NIL, VAL_NUMBER, VAL_BOOL or VAL_OBJ
+    union { double number; bool boolean; Obj* obj; } as;  // an Obj is a string, or for the VM a closure
+} Value;
 ```
 
 Truthiness, equality, `+` on strings, and number printing follow exactly the same rules as the tree-walker. Only `nil` and `false` are falsy, and `"x" + 1` gives `"x1"`.
@@ -85,7 +86,7 @@ Set instructions leave the value on the stack because assignment is an expressio
 
 ## 6. The compiler
 
-`Compiler::compile` takes the parsed program and returns a `Proto` named `<script>`. A `Proto` is a compiled function: its code, its constants, its arity, the functions declared directly inside it, and the list of variables it captures.
+`compile` takes the parsed program and returns a `Proto` named `<script>`. A `Proto` is a compiled function: its code, its constants, its arity, the functions declared directly inside it, and the list of variables it captures.
 
 ### 6.1 Every expression leaves exactly one value
 
@@ -109,11 +110,11 @@ When the compiler meets a name, it decides once, before the program runs, where 
 
 Top-level `let` and `fn` create globals. Any declaration inside `{ }` or inside a function creates a local.
 
-The compiler tracks locals in a list (`FunctionState::locals`) that mirrors the runtime stack. Slot 0 of every function is reserved for the function being called. Parameters take slots 1..arity, and each `let` takes the next slot. When a block ends, `endScope` emits one `Pop` per local declared in it, or a `CloseUpvalue` if a closure captured that local.
+The compiler tracks locals in a list (`FunctionState.locals`) that mirrors the runtime stack. Slot 0 of every function is reserved for the function being called. Parameters take slots 1..arity, and each `let` takes the next slot. When a block ends, `end_scope` emits one `Pop` per local declared in it, or a `CloseUpvalue` if a closure captured that local.
 
 ### 6.3 Control flow and backpatching
 
-Jump targets are absolute instruction indices. A forward jump is emitted before its target is known, with a placeholder operand, and patched once the target is reached (`patchJump`). This is called *backpatching*.
+Jump targets are absolute instruction indices. A forward jump is emitted before its target is known, with a placeholder operand, and patched once the target is reached (`patch_jump`). This is called *backpatching*.
 
 ```
 if (cond) A else B             while (cond) body
@@ -138,28 +139,28 @@ A `fn` declaration is compiled into a new `Proto` with its own `FunctionState`. 
 
 ### 6.5 Closures and upvalues
 
-When `resolveUpvalue` finds a name in an enclosing function, it does three things:
+When `resolve_upvalue` finds a name in an enclosing function, it does three things:
 
 - It marks that local as `captured`, so the enclosing scope will emit `CloseUpvalue` instead of `Pop` when it ends.
 - It records an `UpvalueRef { isLocal, index }` in the inner function's `Proto`: "capture slot `index` of my parent" or "reuse my parent's upvalue `index`".
-- If the variable is several functions away, each function in between gets its own upvalue. This builds a chain, so a closure can reach a variable that the middle function never mentions. `examples/scopes.my` tests this.
+- If the variable is several functions away, each function in between gets its own upvalue. This builds a chain, so a closure can reach a variable that the middle function never mentions. `examples/scopes.rene` tests this.
 
 ## 7. The virtual machine
 
 ### 7.1 State
 
-```cpp
-std::vector<Value> stack_;                            // one value stack shared by every call
-std::vector<Frame> frames_;                           // one Frame per active call
-std::vector<std::shared_ptr<Upvalue>> openUpvalues_;  // captured variables that are still on the stack
-std::unordered_map<std::string, Value> globals_;
+```c
+Value* stack;             // one value stack shared by every call
+Frame* frames;            // one Frame per active call
+ObjUpvalue** openUpvalues; // captured variables that are still on the stack
+Table globals;            // global name -> value
 ```
 
-A `Frame` holds the running `Closure`, its instruction pointer `ip`, and `base`, the stack index of its slot 0. `GetLocal n` reads `stack_[base + n]`.
+Each array is a pointer plus a count and a capacity, grown with `realloc`. A `Frame` holds the running `ObjClosure`, its instruction pointer `ip`, and `base`, the stack index of its slot 0. `GetLocal n` reads `stack[base + n]`.
 
 ### 7.2 The dispatch loop
 
-`VM::execute` is a `for (;;)` loop around one `switch`. Each iteration fetches `code[ip++]` from the current frame and runs it. That's the whole engine. Compared with the tree-walker, there are no recursive C++ calls per AST node, no `shared_ptr<Environment>` allocated per block, and no hash-map lookup per local variable.
+`execute` in `vm.c` is a `for (;;)` loop around one `switch`. Each iteration fetches `code[ip++]` from the current frame and runs it. That's the whole engine. Compared with the tree-walker, there are no recursive C calls per AST node, no scope object allocated per block, and no hash-table lookup per local variable.
 
 ### 7.3 Calls and returns
 
@@ -172,7 +173,7 @@ stack: … | fib | 30 |
           slot0 slot1
 ```
 
-`callValue` checks that the callee is a function and the argument count matches, then pushes a frame whose `base` points at the callee. The arguments are now the callee's parameters, and nothing is copied. `Return` pops the result, closes any upvalues that point into the frame, truncates the stack back to `base`, removes the frame, and pushes the result for the caller. When the `<script>` frame returns, the program is finished.
+`call_value` checks that the callee is a function and the argument count matches, then pushes a frame whose `base` points at the callee. The arguments are now the callee's parameters, and nothing is copied. `Return` pops the result, closes any upvalues that point into the frame, truncates the stack back to `base`, removes the frame, and pushes the result for the caller. When the `<script>` frame returns, the program is finished.
 
 The call depth is capped at 1000, the same as the tree-walker. Deeper recursion reports `Stack overflow: too many nested calls.`
 
@@ -188,16 +189,16 @@ fn makeCounter() {
 }
 ```
 
-The VM handles this with `Upvalue` objects:
+The VM handles this with `ObjUpvalue` objects:
 
-- **Open.** While `makeCounter` is running, `count` lives on the stack. The upvalue stores its stack index (`slot`), so reads and writes go straight to the stack. If two closures capture the same variable, `captureUpvalue` gives them the *same* `Upvalue`, so they see each other's changes.
-- **Closed.** When the variable's scope ends (`CloseUpvalue` at the end of a block, or `Return` at the end of a function), `closeUpvalues` copies the value into `Upvalue::closed` and marks it closed. From then on the closure reads and writes the heap copy.
+- **Open.** While `makeCounter` is running, `count` lives on the stack. The upvalue stores its stack index (`slot`), so reads and writes go straight to the stack. If two closures capture the same variable, `capture_upvalue` gives them the *same* `ObjUpvalue`, so they see each other's changes.
+- **Closed.** When the variable's scope ends (`CloseUpvalue` at the end of a block, or `Return` at the end of a function), `close_upvalues` copies the value into `ObjUpvalue.closed` and marks it closed. From then on the closure reads and writes the heap copy.
 
-The upvalue stores a stack *index*, not a pointer, because `std::vector` may move its storage when it grows.
+The upvalue stores a stack *index*, not a pointer, because the stack array may move when `realloc` grows it.
 
 ## 8. Reading `--dump` output
 
-Here is `examples/closures.my` compiled (real output):
+Here is `examples/closures.rene` compiled (real output):
 
 ```
 == makeCounter (arity 0, upvalues 0) ==
@@ -228,7 +229,7 @@ Each line shows the instruction index, the source line, the opcode, and the oper
 - Inside `next`, `count` is `GetUpvalue 0`. The `Pop` after `SetUpvalue` discards the result of the assignment expression statement.
 - `Nil; Return` at the end is the implicit `return nil;` and isn't reached here.
 
-And the recursive call in `fib` (from `examples/fib.my`):
+And the recursive call in `fib` (from `examples/fib.rene`):
 
 ```
 0009  line   4  GetGlobal    1  ; "fib"     callee
@@ -243,7 +244,7 @@ And the recursive call in `fib` (from `examples/fib.my`):
 
 ## 9. Errors
 
-Errors are reported in the same format as the tree-walker: `[line N] Kind: message`.
+Errors are reported in the same format as the tree-walker: `[line N] Kind: message`. Since C has no exceptions, the lexer, parser, compiler and VM raise them with `lang_error` (`src/errors.c`), which `longjmp`s back to the `setjmp` in `compile_source` or `vm_run`.
 
 | Kind | When | Example |
 |---|---|---|
@@ -272,28 +273,28 @@ The test suite runs every example on both backends and expects identical output.
 
 ## 11. Performance
 
-`fib(30)` (1.6 million calls), built with `g++ -O2`, best of three runs on the development machine:
+`fib(30)` (1.6 million calls), built with `gcc -O2`, typical of three runs on the development machine:
 
 | Backend | Time |
 |---|---|
-| Tree-walker | 8.62 s |
-| Bytecode VM | 0.36 s |
+| Tree-walker | 0.41 s |
+| Bytecode VM | 0.22 s |
 
 These are single-machine timings to show scale, not a rigorous benchmark.
 
 ## 12. Known limitations and next steps
 
-- **Memory leak on cycles.** Values are reference-counted with `shared_ptr`. A closure that captures itself (any recursive local function) forms a cycle and is never freed. The tree-walker has the same problem. The real fix is a tracing garbage collector (mark-and-sweep): roots are the stack, the globals and the open upvalues.
+- **No garbage collector.** Strings, closures and upvalues are freed only at exit (the tree-walker does free scopes that no function captured). A program that builds millions of strings keeps growing. The real fix is a tracing garbage collector (mark-and-sweep): every object is already on the list in `value.c`, and the roots are the stack, the globals and the open upvalues.
 - **Strings are copied** on every push. Interning strings, or storing them behind a shared pointer, would make string-heavy code faster.
-- **Instructions are 12-byte structs.** Real VMs pack them into bytes (`std::vector<uint8_t>`) for better cache use. The `Instr` struct was kept because it is easier to read and debug.
+- **Instructions are 12-byte structs.** Real VMs pack them into bytes (a `uint8_t` array) for better cache use. The `Instr` struct was kept because it is easier to read and debug.
 
 Suggested extensions, in a sensible order:
 
 1. Add an instruction-level trace flag (`--trace`) that prints the stack before each instruction. It's the most useful VM debugging tool.
 2. Pre-declare local functions in a block to fix limitation 2 in section 10.
-3. Add native functions (`clock()`, `len(s)`): a new `Value` alternative `NativeFn`, plus a case in `callValue`.
+3. Add native functions (`clock()`, `len(s)`): a new `ObjType` for native functions, plus a case in `call_value`.
 4. Add `for`, `break` and `continue`. `break` needs a list of exit jumps per loop to patch.
 5. Simple optimizations in the compiler: constant folding (`2 * 3` → `Constant 6`) and a `GetLocal`+`Constant`+`Add` superinstruction.
 6. Garbage collection (see above).
 
-When you add a language feature, add an `examples/*.my` file and its `.expected` output. The test runner checks it on both backends automatically, which keeps them in agreement.
+When you add a language feature, add an `examples/*.rene` file and its `.expected` output. The test runner checks it on both backends automatically, which keeps them in agreement.

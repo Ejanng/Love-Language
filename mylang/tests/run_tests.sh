@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs every examples/*.my on both backends (tree-walker and bytecode VM) and compares
+# Runs every examples/*.rene on both backends (tree-walker and bytecode VM) and compares
 # the output (stdout and stderr) with the matching .expected file.
 # Usage: tests/run_tests.sh [path-to-mylang-binary]
 set -u
@@ -10,8 +10,8 @@ fail=0
 for mode in tree vm; do
   flag=""
   [ "$mode" == "vm" ] && flag="--vm"
-  for src in examples/*.my; do
-    expected="${src%.my}.expected"
+  for src in examples/*.rene; do
+    expected="${src%.rene}.expected"
     actual="$("$bin" $flag "$src" 2>&1)"
     if [ "$actual" == "$(cat "$expected")" ]; then
       pass=$((pass + 1))
