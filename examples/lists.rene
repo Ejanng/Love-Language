@@ -1,0 +1,21 @@
+// lists.rene - lists, indexing and loop control
+let fruits = ["apple", "banana", "cherry"];
+push(fruits, "date");
+print fruits;
+print "first:", fruits[0], "last:", fruits[-1], "count:", len(fruits);
+
+fruits[1] = "blueberry";
+print fruits;
+
+let total = 0;
+let i = 0;
+while true {
+    i = i + 1;
+    if i > 10 { break; }
+    if i % 2 == 0 { continue; }
+    total = total + i;
+}
+print "sum of odd numbers 1..10:", total;
+
+for ch in "rene" { print ch; }
+print type(fruits), type(3.5), type(nil), type(len), type(true);

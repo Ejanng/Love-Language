@@ -1,5 +1,0 @@
-// The first program in the language.
-print "Hello, world!";
-let name = "mylang";
-print "Welcome to " + name + "!";
-print 1 + 2 * 3;

@@ -1,0 +1,5 @@
+// error.rene - runtime errors report the line number
+let x = 10;
+print "before the error";
+print x / 0;
+print "never printed";

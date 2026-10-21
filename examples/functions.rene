@@ -1,0 +1,27 @@
+// functions.rene - recursion, closures and first-class functions
+fn fib(n) {
+    if n < 2 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+print "fib(20) =", fib(20);
+
+// Closures remember the scope they were created in.
+fn makeCounter() {
+    let count = 0;
+    return fn () {
+        count = count + 1;
+        return count;
+    };
+}
+let counter = makeCounter();
+counter();
+counter();
+print "counter:", counter();
+
+// Functions are values: pass them around.
+fn map(list, f) {
+    let result = [];
+    for item in list { push(result, f(item)); }
+    return result;
+}
+print map([1, 2, 3, 4], fn (x) { return x * x; });
